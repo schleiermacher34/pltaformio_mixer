@@ -28,23 +28,25 @@ extern "C" {
 // SCREEN: ui_Screen1
 void ui_Screen1_screen_init(void);
 extern lv_obj_t * ui_Screen1;
-extern lv_obj_t * ui_Screen1_Button4;
-extern lv_obj_t * ui_Screen1_Label6;
-void ui_event_Screen1_Button5(lv_event_t * e);
-extern lv_obj_t * ui_Screen1_Button5;
-extern lv_obj_t * ui_Screen1_Label7;
+void ui_event_Screen1_Arc1(lv_event_t * e);
+extern lv_obj_t * ui_Screen1_Arc1;
 void ui_event_Screen1_Button2(lv_event_t * e);
 extern lv_obj_t * ui_Screen1_Button2;
-extern lv_obj_t * ui_Screen1_Label2;
-extern lv_obj_t * ui_Screen1_Panel2;
-extern lv_obj_t * ui_Screen1_Label8;
-extern lv_obj_t * ui_Screen1_Label9;
-extern lv_obj_t * ui_Screen1_Panel3;
-extern lv_obj_t * ui_Screen1_Label4;
 extern lv_obj_t * ui_Screen1_Label1;
+extern lv_obj_t * ui_Screen1_Label11;
 void ui_event_Screen1_Button7(lv_event_t * e);
 extern lv_obj_t * ui_Screen1_Button7;
 extern lv_obj_t * ui_Screen1_Label10;
+void ui_event_Screen1_Arc2(lv_event_t * e);
+extern lv_obj_t * ui_Screen1_Arc2;
+extern lv_obj_t * ui_Screen1_Label8;
+extern lv_obj_t * ui_Screen1_Button4;
+extern lv_obj_t * ui_Screen1_Label6;
+extern lv_obj_t * ui_Screen1_Label9;
+void ui_event_Screen1_Button3(lv_event_t * e);
+extern lv_obj_t * ui_Screen1_Button3;
+extern lv_obj_t * ui_Screen1_Label3;
+extern lv_obj_t * ui_Screen1_Label2;
 // SCREEN: ui_Screen2
 void ui_Screen2_screen_init(void);
 extern lv_obj_t * ui_Screen2;
@@ -56,20 +58,19 @@ extern lv_obj_t * ui_Screen2_Label12;
 extern lv_obj_t * ui_Screen2_Button10;
 extern lv_obj_t * ui_Screen2_Label13;
 extern lv_obj_t * ui_Screen2_Panel3;
+extern lv_obj_t * ui_Screen2_Label5;
+extern lv_obj_t * ui_Screen2_Label6;
+extern lv_obj_t * ui_Screen2_Label7;
+void ui_event_Screen2_TextArea2(lv_event_t * e);
+extern lv_obj_t * ui_Screen2_TextArea2;
 extern lv_obj_t * ui_Screen2_Keyboard1;
 void ui_event_Screen2_Button11(lv_event_t * e);
 extern lv_obj_t * ui_Screen2_Button11;
 extern lv_obj_t * ui_Screen2_Label14;
-void ui_event_Screen2_TextArea2(lv_event_t * e);
-extern lv_obj_t * ui_Screen2_TextArea2;
 void ui_event_Screen2_Button12(lv_event_t * e);
 extern lv_obj_t * ui_Screen2_Button12;
 void ui_event_Screen2_Label15(lv_event_t * e);
 extern lv_obj_t * ui_Screen2_Label15;
-extern lv_obj_t * ui_Screen2_Panel5;
-extern lv_obj_t * ui_Screen2_Label19;
-extern lv_obj_t * ui_Screen2_Label20;
-extern lv_obj_t * ui_Screen2_Label21;
 // SCREEN: ui_Screen3
 void ui_Screen3_screen_init(void);
 extern lv_obj_t * ui_Screen3;
@@ -102,9 +103,8 @@ extern lv_obj_t * ui_Screen3_Label25;
 extern lv_obj_t * ui_Screen3_Roller3;
 extern lv_obj_t * ui_Screen3_Label26;
 extern lv_obj_t * ui_Screen3_Label27;
-// SCREEN: ui_Screen4
-void ui_Screen4_screen_init(void);
-extern lv_obj_t * ui_Screen4;
+extern lv_obj_t * ui_Screen3_Dropdown1;
+extern lv_obj_t * ui_Screen3_Label12;
 // SCREEN: ui_Screen5
 void ui_Screen5_screen_init(void);
 extern lv_obj_t * ui_Screen5;
@@ -152,41 +152,12 @@ extern lv_obj_t * ui_Screen4_Label24;
 void ui_event_Screen3_Button1(lv_event_t * e);
 extern lv_obj_t * ui_Screen3_Button1;
 extern lv_obj_t * ui_Screen3_Label32;
-// SCREEN: ui_Screen6
-void ui_Screen6_screen_init(void);
-extern lv_obj_t * ui_Screen6;
-extern lv_obj_t * ui_Screen6_Button4;
-extern lv_obj_t * ui_Screen3_Label4;
-extern lv_obj_t * ui_Screen6_Button5;
-extern lv_obj_t * ui_Screen3_Label7;
-extern lv_obj_t * ui_Screen6_Roller2;
-extern lv_obj_t * ui_Screen6_Button6;
-extern lv_obj_t * ui_Screen3_Label8;
-void ui_event_Screen3_Button7(lv_event_t * e);
-extern lv_obj_t * ui_Screen3_Button7;
-extern lv_obj_t * ui_Screen3_Label9;
-extern lv_obj_t * ui_Screen6_Panel1;
-extern lv_obj_t * ui_Screen3_Label10;
-extern lv_obj_t * ui_Screen6_Panel2;
-void ui_event_Screen6_Switch4(lv_event_t * e);
-extern lv_obj_t * ui_Screen6_Switch4;
-extern lv_obj_t * ui_Screen6_Label11;
-extern lv_obj_t * ui_Screen6_Label12;
-extern lv_obj_t * ui_Screen3_Label14;
-void ui_event_Screen6_Switch5(lv_event_t * e);
-extern lv_obj_t * ui_Screen6_Switch5;
-extern lv_obj_t * ui_Screen6_Label15;
-extern lv_obj_t * ui_Screen6_Label33;
-extern lv_obj_t * ui_Screen3_Label34;
-void ui_event_Screen6_Button8(lv_event_t * e);
-extern lv_obj_t * ui_Screen6_Button8;
-extern lv_obj_t * ui_Screen3_Label35;
-extern lv_obj_t * ui_Screen6_Roller4;
-extern lv_obj_t * ui_Screen6_Label36;
-extern lv_obj_t * ui_Screen6_Label37;
+extern lv_obj_t * ui_Screen5_Button3;
+extern lv_obj_t * ui_Screen5_Label13;
 extern lv_obj_t * ui____initial_actions0;
 
 
+LV_IMG_DECLARE(ui_img_1863159612);    // assets/gradient-linear-purple-green-800x480-c2-8b008b-008080-a-45-f-14.png
 
 
 
