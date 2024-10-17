@@ -28,15 +28,16 @@ extern "C" {
 // SCREEN: ui_Screen1
 void ui_Screen1_screen_init(void);
 extern lv_obj_t * ui_Screen1;
+void ui_event_Screen1_Button7(lv_event_t * e);
+extern lv_obj_t * ui_Screen1_Button7;
+extern lv_obj_t * ui_Screen1_Label10;
+extern lv_obj_t * ui_Screen1_Panel1;
 void ui_event_Screen1_Arc1(lv_event_t * e);
 extern lv_obj_t * ui_Screen1_Arc1;
 void ui_event_Screen1_Button2(lv_event_t * e);
 extern lv_obj_t * ui_Screen1_Button2;
 extern lv_obj_t * ui_Screen1_Label1;
 extern lv_obj_t * ui_Screen1_Label11;
-void ui_event_Screen1_Button7(lv_event_t * e);
-extern lv_obj_t * ui_Screen1_Button7;
-extern lv_obj_t * ui_Screen1_Label10;
 void ui_event_Screen1_Arc2(lv_event_t * e);
 extern lv_obj_t * ui_Screen1_Arc2;
 extern lv_obj_t * ui_Screen1_Label8;
@@ -84,8 +85,6 @@ extern lv_obj_t * ui_Screen3_Label3;
 void ui_event_Screen3_Button14(lv_event_t * e);
 extern lv_obj_t * ui_Screen3_Button14;
 extern lv_obj_t * ui_Screen3_Label17;
-extern lv_obj_t * ui_Screen3_Panel4;
-extern lv_obj_t * ui_Screen3_Label18;
 extern lv_obj_t * ui_Screen3_Panel6;
 void ui_event_Screen3_Switch1(lv_event_t * e);
 extern lv_obj_t * ui_Screen3_Switch1;
@@ -105,6 +104,10 @@ extern lv_obj_t * ui_Screen3_Label26;
 extern lv_obj_t * ui_Screen3_Label27;
 extern lv_obj_t * ui_Screen3_Dropdown1;
 extern lv_obj_t * ui_Screen3_Label12;
+void ui_event_Screen3_Button5(lv_event_t * e);
+extern lv_obj_t * ui_Screen3_Button5;
+extern lv_obj_t * ui_Screen3_Label7;
+extern lv_obj_t * ui_Screen3_Label4;
 // SCREEN: ui_Screen5
 void ui_Screen5_screen_init(void);
 extern lv_obj_t * ui_Screen5;
@@ -153,7 +156,7 @@ void ui_event_Screen3_Button1(lv_event_t * e);
 extern lv_obj_t * ui_Screen3_Button1;
 extern lv_obj_t * ui_Screen3_Label32;
 extern lv_obj_t * ui_Screen5_Button3;
-extern lv_obj_t * ui_Screen5_Label13;
+extern lv_obj_t * ui_Screen5_Label1;
 extern lv_obj_t * ui____initial_actions0;
 
 

@@ -3,6 +3,8 @@
 #include <ESP_Panel_Library.h>
 #include <ESP_IOExpander_Library.h>
 #include <ui.h>
+#include "esp_log.h"
+
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <Update.h>
@@ -14,6 +16,23 @@
 #include <nvs_flash.h>
 #include "esp_ota_ops.h"  // Include ESP-IDF OTA operations
 #include <ModbusRTU.h>    // Include emelianov's ModbusRTU library
+
+
+// Place the restartDevice function
+void restartDevice() {
+    Serial.println("Device will restart in 5 seconds...");
+    Serial.flush();
+    delay(5000); // Wait 5 seconds
+    ESP.restart();
+}
+
+// Place the vApplicationStackOverflowHook function
+extern "C" void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
+    Serial.printf("Stack Overflow in task: %s\n", pcTaskName);
+    Serial.flush();
+    delay(5000); // Wait 5 seconds
+    abort(); // Stop execution
+}
 
 /* Heap memory check */
 void check_heap() {
@@ -69,14 +88,20 @@ struct ProgramData {
     bool directions[MAX_STEPS];  // Directions for each step
 };
 
+typedef struct {
+    bool direction;       // true for forward, false for reverse
+    uint16_t speed;       // Speed in RPM
+    bool autoMode;        // true for auto, false for manual
+    // Add other settings as needed
+} MotorConfig;
+
 
 
 ESP_Panel *panel = NULL;
 
 // Forward declaration of otaUpdateTask
 void otaUpdateTask(void* parameter);
-void runProgramTask(void* parameter);
-void saveProgramSettings(void* parameter);
+
 
 /* Modbus Configuration */
 #define MODBUS_TX_PIN 44        // Example GPIO pin for UART1 TX
@@ -91,11 +116,20 @@ ModbusRTU mb;                   // ModbusRTU instance
 #define MOTOR_POLES 2           // Number of motor poles (adjust as per your motor)
 #define BASE_FREQUENCY 50.0     // Base frequency in Hertz (adjust as per your motor)
 
+// Global variables for UI updates
+volatile bool modbusErrorFlag = false;
+volatile uint8_t modbusErrorCode = 0;
+volatile bool mototimeUpdated = false;
+volatile uint16_t mototimeValue = 0;
+
 /* Function to Convert RPM to Hertz */
 float rpmToHertz(int rpm) {
     // Formula: Frequency (Hz) = (RPM × Number of Poles) / 120
     return (rpm * MOTOR_POLES) / 12.0;
 }
+
+
+
 
 #if ESP_PANEL_LCD_BUS_TYPE == ESP_PANEL_BUS_TYPE_RGB
 /* Display flushing */
@@ -158,9 +192,25 @@ void lvgl_port_task(void *arg) {
     uint32_t task_delay_ms = LVGL_TASK_MAX_DELAY_MS;
     while (1) {
         lvgl_port_lock(-1); // Lock LVGL due to non-thread-safe API
+
+        // Handle LVGL timers
         task_delay_ms = lv_timer_handler();
+
+        // Check and handle Modbus error updates
+        if (modbusErrorFlag) {
+            lv_label_set_text_fmt(ui_Screen2_Label7, "Modbus error: 0x%02X", modbusErrorCode);
+            modbusErrorFlag = false; // Reset the flag after handling
+        }
+
+        // Check and handle mototime updates
+        if (mototimeUpdated) {
+            lv_label_set_text_fmt(ui_Screen1_Label11, " %u", mototimeValue);
+            mototimeUpdated = false; // Reset the flag after handling
+        }
+
         lvgl_port_unlock();
 
+        // Adjust task delay
         if (task_delay_ms > LVGL_TASK_MAX_DELAY_MS) {
             task_delay_ms = LVGL_TASK_MAX_DELAY_MS;
         } else if (task_delay_ms < LVGL_TASK_MIN_DELAY_MS) {
@@ -169,6 +219,7 @@ void lvgl_port_task(void *arg) {
         vTaskDelay(pdMS_TO_TICKS(task_delay_ms));
     }
 }
+
 void otaUpdateTask(void* parameter) {
     if (xSemaphoreTake(ota_semaphore, portMAX_DELAY) == pdTRUE) {
         Serial.println("Starting OTA update...");
@@ -264,7 +315,7 @@ extern lv_obj_t *ui_Screen3_Switch9;    // Direction switch 3 (forward/reverse)
 extern lv_obj_t *ui_Screen5_Button3;    // Save program button
 extern lv_obj_t *ui_Screen1_Label11;
 extern lv_obj_t *ui_Screen1_Label2;
-extern lv_obj_t *ui_Screen3_Label18;
+extern lv_obj_t *ui_Screen3_Button5;
 
 /* Event Handler for Save Program Button */
 void event_handler_save_program_button(lv_event_t * e) {
@@ -277,20 +328,19 @@ void event_handler_save_program_button(lv_event_t * e) {
     }
 }
 
-/* Modbus Callback Function */
+// Modbus Callback Function
 bool modbusCallback(Modbus::ResultCode event, uint16_t transactionId, void* data) {
     if (event != Modbus::EX_SUCCESS) {
         Serial.printf("Modbus error: 0x%02X\n", event);
-        // Update log label
-        lvgl_port_lock(-1);
-        lv_label_set_text_fmt(ui_Screen2_Label7, "Modbus error: 0x%02X", event);
-        lvgl_port_unlock();
+        modbusErrorCode = event;
+        modbusErrorFlag = true; // Set the flag
     } else {
         Serial.println("Modbus transaction successful");
-        // Additional handling if needed
+        modbusErrorFlag = false; // Clear the flag
     }
     return true;
 }
+
 
 uint8_t getSelectedMotorID() {
   uint16_t selectedIndex;
@@ -529,32 +579,211 @@ void runProgram(const ProgramData *programData) {
     Serial.println("Program completed, motor stopped.");
 }
 
+
+void runProgramTask(void *pvParameters) {
+    ProgramData *programData = (ProgramData*)pvParameters;
+    runProgram(programData);
+    free(programData); // Free the allocated memory after use
+    vTaskDelete(NULL); // Delete the task when done
+}
+
+esp_err_t saveMotorConfigToNVS(uint8_t motorID, const MotorConfig *config) {
+    nvs_handle_t nvsHandle;
+    esp_err_t err;
+
+    // Open NVS handle
+    err = nvs_open("motor_config", NVS_READWRITE, &nvsHandle);
+    if (err != ESP_OK) {
+        Serial.printf("Error opening NVS handle: %s\n", esp_err_to_name(err));
+        return err;
+    }
+
+    // Create a unique key for each motor
+    char key[16];
+
+    // Save direction
+    snprintf(key, sizeof(key), "motor%d_dir", motorID);
+    err = nvs_set_u8(nvsHandle, key, config->direction ? 1 : 0);
+    if (err != ESP_OK) goto nvs_error;
+
+    // Save speed
+    snprintf(key, sizeof(key), "motor%d_speed", motorID);
+    err = nvs_set_u16(nvsHandle, key, config->speed);
+    if (err != ESP_OK) goto nvs_error;
+
+    // Save auto mode
+    snprintf(key, sizeof(key), "motor%d_auto", motorID);
+    err = nvs_set_u8(nvsHandle, key, config->autoMode ? 1 : 0);
+    if (err != ESP_OK) goto nvs_error;
+
+    // Commit changes
+    err = nvs_commit(nvsHandle);
+    if (err != ESP_OK) goto nvs_error;
+
+    nvs_close(nvsHandle);
+    Serial.printf("Motor %d configuration saved to NVS.\n", motorID);
+    return ESP_OK;
+
+nvs_error:
+    Serial.printf("Failed to save motor configuration: %s\n", esp_err_to_name(err));
+    nvs_close(nvsHandle);
+    return err;
+}
+
+void event_handler_save_motor_config(lv_event_t * e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        Serial.println("Save Motor Configuration button pressed.");
+
+        MotorConfig config;
+        uint8_t motorID = getSelectedMotorID(); // Assuming this function returns the motor ID
+
+        // Lock LVGL before accessing UI elements
+        lvgl_port_lock(-1);
+
+        // Get direction from switch
+        config.direction = lv_obj_has_state(ui_Screen3_Switch1, LV_STATE_CHECKED);
+
+        // Get speed from roller
+        config.speed = lv_roller_get_selected(ui_Screen3_Roller1) + MIN_SPEED_RPM;
+
+        // Get auto/manual mode from switch
+        config.autoMode = lv_obj_has_state(ui_Screen3_Switch3, LV_STATE_CHECKED);
+
+        // Unlock LVGL
+        lvgl_port_unlock();
+
+        // Save configuration to NVS
+        esp_err_t err = saveMotorConfigToNVS(motorID, &config);
+        if (err == ESP_OK) {
+            Serial.println("Motor configuration saved successfully.");
+            // Optionally, display a message on the UI
+        } else {
+            Serial.println("Failed to save motor configuration.");
+            // Optionally, display an error message on the UI
+        }
+    }
+}
+
+esp_err_t loadMotorConfigFromNVS(uint8_t motorID, MotorConfig *config) {
+    nvs_handle_t nvsHandle;
+    esp_err_t err;
+
+    // Open NVS handle
+    err = nvs_open("motor_config", NVS_READONLY, &nvsHandle);
+    if (err != ESP_OK) {
+        Serial.printf("Error opening NVS handle: %s\n", esp_err_to_name(err));
+        return err;
+    }
+
+    char key[16];
+    uint8_t value_u8;
+    uint16_t value_u16;
+
+    // Load direction
+    snprintf(key, sizeof(key), "motor%d_dir", motorID);
+    err = nvs_get_u8(nvsHandle, key, &value_u8);
+    if (err != ESP_OK) goto nvs_error;
+    config->direction = (value_u8 != 0);
+
+    // Load speed
+    snprintf(key, sizeof(key), "motor%d_speed", motorID);
+    err = nvs_get_u16(nvsHandle, key, &value_u16);
+    if (err != ESP_OK) goto nvs_error;
+    config->speed = value_u16;
+
+    // Load auto mode
+    snprintf(key, sizeof(key), "motor%d_auto", motorID);
+    err = nvs_get_u8(nvsHandle, key, &value_u8);
+    if (err != ESP_OK) goto nvs_error;
+    config->autoMode = (value_u8 != 0);
+
+    nvs_close(nvsHandle);
+    Serial.printf("Motor %d configuration loaded from NVS.\n", motorID);
+    return ESP_OK;
+
+nvs_error:
+    Serial.printf("Failed to load motor configuration: %s\n", esp_err_to_name(err));
+    nvs_close(nvsHandle);
+    return err;
+}
+
+
+// Assuming ui_Screen3_Dropdown1 is the motor selection dropdown
+void event_handler_motor_selection(lv_event_t * e) {
+    if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
+        Serial.println("Motor selection changed.");
+
+        uint8_t motorID = getSelectedMotorID();
+
+        // Load the configuration for the selected motor
+        MotorConfig config;
+        esp_err_t err = loadMotorConfigFromNVS(motorID, &config);
+        if (err == ESP_OK) {
+            Serial.println("Applying saved motor configuration.");
+
+            // Lock LVGL before updating UI elements
+            lvgl_port_lock(-1);
+
+            // Set direction switch
+            if (config.direction) {
+                lv_obj_add_state(ui_Screen3_Switch1, LV_STATE_CHECKED);
+            } else {
+                lv_obj_clear_state(ui_Screen3_Switch1, LV_STATE_CHECKED);
+            }
+
+            // Set speed roller
+            lv_roller_set_selected(ui_Screen3_Roller1, config.speed - MIN_SPEED_RPM, LV_ANIM_OFF);
+
+            // Set auto/manual switch
+            if (config.autoMode) {
+                lv_obj_add_state(ui_Screen3_Switch3, LV_STATE_CHECKED);
+            } else {
+                lv_obj_clear_state(ui_Screen3_Switch3, LV_STATE_CHECKED);
+            }
+
+            // Unlock LVGL
+            lvgl_port_unlock();
+
+            Serial.println("Motor configuration applied.");
+        } else {
+            Serial.println("No saved configuration for this motor.");
+            // Optionally, reset UI elements to default values
+        }
+    }
+}
+
+
 /* Event Handler for Start Motor Button with Direction */
 void event_handler_start_motor_button(lv_event_t * e) {
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_CLICKED) {
-
-
  Serial.println("Start button pressed...");
 
-        // Check if auto mode is selected
+         // Check if auto mode is selected
         bool isAutoMode = lv_obj_has_state(ui_Screen3_Switch3, LV_STATE_CHECKED);
         if (isAutoMode) {
             // Auto mode is selected, get the selected program from Roller3
             uint16_t programIndex = lv_roller_get_selected(ui_Screen3_Roller3);
             Serial.printf("Auto mode selected, running program %d\n", programIndex);
 
+            // Allocate memory for ProgramData
+            ProgramData *programData = (ProgramData*)malloc(sizeof(ProgramData));
+            if (programData == NULL) {
+                Serial.println("Failed to allocate memory for ProgramData.");
+                return;
+            }
+
             // Load the selected program from NVS
-            ProgramData programData;
-            esp_err_t result = loadProgramFromNVS(programIndex, &programData);
+            esp_err_t result = loadProgramFromNVS(programIndex, programData);
             if (result == ESP_OK) {
-                // Run the program
-                runProgram(&programData);
+                // Create a task to run the program
+                xTaskCreate(runProgramTask, "Run Program Task", 2046, (void*)programData, 1, NULL);
             } else {
                 Serial.println("Failed to load program data.");
+                free(programData);
             }
         } else {
-uint8_t motorID = getSelectedMotorID();
+         uint8_t motorID = getSelectedMotorID();
 
         // Lock the interface to safely interact with UI components
         lvgl_port_lock(-1);
@@ -601,9 +830,6 @@ uint8_t motorID = getSelectedMotorID();
 
         Serial.println("Motor started with the selected direction.");
         }
-
-
-        
     }
 }
 
@@ -643,8 +869,9 @@ void event_handler_change_speed_button(lv_event_t * e) {
         // Get the speed value from the Roller
         lvgl_port_lock(-1);
         uint16_t rpm = lv_roller_get_selected(ui_Screen3_Roller1) + MIN_SPEED_RPM;
+        lv_label_set_text_fmt(ui_Screen1_Label11, "Current speed: %u", rpm);       
         lvgl_port_unlock();
-
+    
         // Convert RPM to Hertz
         float frequency = rpmToHertz(rpm);
 
@@ -734,11 +961,17 @@ void wifi_scan_task(void *pvParameters) {
         if (xSemaphoreTake(wifi_scan_semaphore, portMAX_DELAY)) {
             Serial.println("Starting WiFi scan...");
 
+            // Ensure Wi-Fi is in station mode
+            WiFi.mode(WIFI_STA);
+            WiFi.disconnect(); // Disconnect before scanning
+            delay(100);
+
             // Clear existing dropdown items
             lvgl_port_lock(-1);
             lv_dropdown_clear_options(ui_Screen2_Dropdown2);
             lvgl_port_unlock();
 
+            // Start Wi-Fi scan
             int n = WiFi.scanNetworks();  // Scan for available networks
             Serial.println("Scan completed");
 
@@ -769,6 +1002,7 @@ void wifi_scan_task(void *pvParameters) {
         }
     }
 }
+
 
 /* Event Handlers for Wi-Fi Buttons */
 void event_handler_scan_button(lv_event_t * e) {
@@ -801,32 +1035,16 @@ void modbusTask(void *pvParameters) {
     }
 }
 
-/* LVGL Task */
-void guiTask(void* pvParameter) {
-    (void) pvParameter;
-    for (;;) {
-        // Lock the mutex before calling lv_task_handler()
-        lvgl_port_lock(-1);
-        lv_task_handler();
-        lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(5));
-    }
-}
+
 
 uint16_t speed_value = 0;
-/* Modbus Callback for mototime */
+// Mototime Callback Function
 bool mototimeCallback(Modbus::ResultCode event, uint16_t transactionId, void* data) {
     if (event == Modbus::EX_SUCCESS) {
-        // Read successful
         Serial.println("Mototime read successful.");
-
-        // Update the UI with the new mototime value
-        lvgl_port_lock(-1);
-        lv_label_set_text_fmt(ui_Screen1_Label11, " %u", speed_value);
-        lv_label_set_text_fmt(ui_Screen3_Label18, "Current speed: %u", speed_value);
-        lvgl_port_unlock();
+        mototimeValue = speed_value; // Update the value
+        mototimeUpdated = true;      // Set the flag
     } else {
-        // Read failed
         Serial.printf("Mototime read error: 0x%02X\n", event);
     }
     return true;
@@ -848,14 +1066,18 @@ void vfdReadTask(void *pvParameters) {
         }
 
         // Wait some time before next read
-        vTaskDelay(pdMS_TO_TICKS(5000)); // Read every 5 seconds
+        vTaskDelay(pdMS_TO_TICKS(10000)); // Read every 5 seconds
     }
 }
 
 
 void setup() {
     Serial.begin(115200);
+    Serial.setDebugOutput(true);
+    Serial.printf("Free heap: %u bytes\n", esp_get_free_heap_size());
+
     Serial.println("Setup starting...");
+    esp_log_level_set("*", ESP_LOG_VERBOSE);
 
     panel = new ESP_Panel();
 
@@ -931,17 +1153,22 @@ panel->init();  // Call the init function directly, since it returns void
     const esp_partition_t *running = esp_ota_get_running_partition();
     if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
         if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
-            Serial.println("New app is pending verification...");
+           Serial.println("New app is pending verification...");
             esp_ota_mark_app_valid_cancel_rollback();
             Serial.println("App marked as valid.");
-        }
-    }
+       }
+   }
 
     /* Initialize UI */
     ui_init();
 
-    // Initialize NVS and other components
-    nvs_flash_init();
+
+
+ if(!buf) {
+    Serial.println("Error: Failed to allocate LVGL buffer");
+    while (1); // Halt if the buffer fails to allocate
+}
+
     /* Attach event handlers (check for null pointers) */
     if (ui_Screen2_Button8) {
         lv_obj_add_event_cb(ui_Screen2_Button8, event_handler_scan_button, LV_EVENT_CLICKED, NULL);
@@ -983,30 +1210,36 @@ panel->init();  // Call the init function directly, since it returns void
     }else{
         Serial.println("ui_screen5_button3 is null");
     }
+    if (ui_Screen3_Button5) {
+    lv_obj_add_event_cb(ui_Screen3_Button5, event_handler_save_motor_config, LV_EVENT_CLICKED, NULL);
+    } else {
+    Serial.println("ui_Screen3_Button5 is NULL");
+    }
+
 
     /* Create semaphores */
-    ota_semaphore = xSemaphoreCreateBinary();
+    //ota_semaphore = xSemaphoreCreateBinary();
     // Create the semaphore for saving the program
     save_program_semaphore = xSemaphoreCreateBinary();
-    run_program_semaphore = xSemaphoreCreateBinary();
+  //  run_program_semaphore = xSemaphoreCreateBinary();
 
-    /* Initialize semaphores */
-   // xSemaphoreGive(ota_semaphore);
-    xSemaphoreGive(save_program_semaphore);
-    xSemaphoreGive(run_program_semaphore);
+//     /* Initialize semaphores */
+//    // xSemaphoreGive(ota_semaphore);
+//     xSemaphoreGive(save_program_semaphore);
+//     xSemaphoreGive(run_program_semaphore);
     
     wifi_connect_semaphore = xSemaphoreCreateBinary();
     wifi_scan_semaphore = xSemaphoreCreateBinary();
 
     /* Create tasks */
-    xTaskCreate(wifi_connect_task, "WiFi Connect Task", 8192, NULL, 1, NULL);
-    xTaskCreate(wifi_scan_task, "WiFi Scan Task", 8192, NULL, 1, NULL);
-    xTaskCreate(guiTask, "GUI Task", 8192, NULL, 1, NULL);
+    xTaskCreate(wifi_connect_task, "WiFi Connect Task", 2046, NULL, 1, NULL);
+    xTaskCreate(wifi_scan_task, "WiFi Scan Task", 2046, NULL, 1, NULL);
+    // xTaskCreate(guiTask, "GUI Task", 2046, NULL, 1, NULL);
   // xTaskCreate(otaUpdateTask, "OTA Update Task", 16384, NULL, 1, &otaTaskHandle); // Increase stack size
-// Create the task that will wait on the semaphore
-    xTaskCreate(saveProgramTask, "Save Program Task", 8192, NULL, 1, NULL);
-    //xTaskCreate(runProgramTask, "Run Program Task", 8192, NULL, 1, NULL);
-    xTaskCreate(vfdReadTask, "VFD Read Task", 4096, NULL, 1, NULL); // VFD Read task
+
+    xTaskCreate(saveProgramTask, "Save Program Task", 2046, NULL, 1, NULL);
+   // xTaskCreate(runProgramTask, "Run Program Task", 2046, NULL, 1, NULL);
+    //xTaskCreate(vfdReadTask, "VFD Read Task", 2046, NULL, 3, NULL); // VFD Read task
 
     /* Initialize Modbus Serial */
     pinMode(MODBUS_DE_RE_PIN, OUTPUT);
@@ -1023,7 +1256,7 @@ panel->init();  // Call the init function directly, since it returns void
     mb.master(); // Set as Modbus master
 
     // Create Modbus task
-    xTaskCreate(modbusTask, "Modbus Task", 8192, NULL, 1, NULL);
+    xTaskCreate(modbusTask, "Modbus Task", 2046, NULL, 2, NULL);
 
     Serial.println("Modbus initialized");
     Serial.println("Setup done");
