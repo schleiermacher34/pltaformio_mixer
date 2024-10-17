@@ -78,6 +78,7 @@ SemaphoreHandle_t wifi_scan_semaphore = NULL;
 SemaphoreHandle_t ota_semaphore = NULL;
 SemaphoreHandle_t save_program_semaphore = NULL; // Semaphore for saving program
 SemaphoreHandle_t run_program_semaphore = NULL;
+SemaphoreHandle_t nvs_mutex;
 
 /* Structure to hold the program data */
 struct ProgramData {
@@ -591,10 +592,13 @@ esp_err_t saveMotorConfigToNVS(uint8_t motorID, const MotorConfig *config) {
     nvs_handle_t nvsHandle;
     esp_err_t err;
 
+    xSemaphoreTake(nvs_mutex, portMAX_DELAY);
+
     // Open NVS handle
     err = nvs_open("motor_config", NVS_READWRITE, &nvsHandle);
     if (err != ESP_OK) {
         Serial.printf("Error opening NVS handle: %s\n", esp_err_to_name(err));
+        xSemaphoreGive(nvs_mutex);
         return err;
     }
 
@@ -621,7 +625,11 @@ esp_err_t saveMotorConfigToNVS(uint8_t motorID, const MotorConfig *config) {
     if (err != ESP_OK) goto nvs_error;
 
     nvs_close(nvsHandle);
-    Serial.printf("Motor %d configuration saved to NVS.\n", motorID);
+    nvs_close(nvsHandle);
+
+    // Give the NVS mutex
+    xSemaphoreGive(nvs_mutex);
+
     return ESP_OK;
 
 nvs_error:
@@ -961,10 +969,7 @@ void wifi_scan_task(void *pvParameters) {
         if (xSemaphoreTake(wifi_scan_semaphore, portMAX_DELAY)) {
             Serial.println("Starting WiFi scan...");
 
-            // Ensure Wi-Fi is in station mode
-            WiFi.mode(WIFI_STA);
-            WiFi.disconnect(); // Disconnect before scanning
-            delay(100);
+
 
             // Clear existing dropdown items
             lvgl_port_lock(-1);
@@ -1141,12 +1146,7 @@ panel->init();  // Call the init function directly, since it returns void
     /* Create LVGL task */
     xTaskCreate(lvgl_port_task, "lvgl", LVGL_TASK_STACK_SIZE, NULL, LVGL_TASK_PRIORITY + 1, NULL); // Set higher priority for LVGL task
 
-    /* Initialize NVS */
-    esp_err_t nvs_err = nvs_flash_init();
-    if (nvs_err != ESP_OK) {
-        Serial.printf("NVS Flash init failed with error: %s\n", esp_err_to_name(nvs_err));
-        while (1); // Halt if NVS initialization fails
-    }
+
 
     /* Check OTA update state */
     esp_ota_img_states_t ota_state;
@@ -1161,7 +1161,22 @@ panel->init();  // Call the init function directly, since it returns void
 
     /* Initialize UI */
     ui_init();
+        // Initialize NVS
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        // NVS partition was truncated and needs to be erased
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(nvs_err);
 
+    // Initialize Wi-Fi in station mode
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect(); // Disconnect from any previous connections
+    delay(100); // Short delay to ensure Wi-Fi is initialized
+
+        // Initialize the NVS mutex
+    nvs_mutex = xSemaphoreCreateMutex();
 
 
  if(!buf) {
@@ -1215,6 +1230,12 @@ panel->init();  // Call the init function directly, since it returns void
     } else {
     Serial.println("ui_Screen3_Button5 is NULL");
     }
+    if (ui_Screen3_Dropdown1) {
+    lv_obj_add_event_cb(ui_Screen3_Dropdown1, event_handler_motor_selection, LV_EVENT_VALUE_CHANGED, NULL);
+  } else {
+    Serial.println("ui_Screen3_Dropdown1 is NULL");
+  }
+
 
 
     /* Create semaphores */
