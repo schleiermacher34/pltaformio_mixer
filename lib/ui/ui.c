@@ -171,11 +171,11 @@ void ui_event_Screen1_Button7(lv_event_t * e)
 }
 void ui_event_Screen1_Arc1(lv_event_t * e)
 {
-    lv_event_code_t event_code = lv_event_get_code(e);
-    lv_obj_t * target = lv_event_get_target(e);
-    if(event_code == LV_EVENT_CLICKED) {
-        _ui_arc_set_text_value(ui_Screen1_Label11, target, "", ".");
-    }
+    // lv_event_code_t event_code = lv_event_get_code(e);
+    // lv_obj_t * target = lv_event_get_target(e);
+    // if(event_code == LV_EVENT_CLICKED) {
+    //     _ui_arc_set_text_value(ui_Screen1_Label11, target, "", ".");
+    // }
 }
 void ui_event_Screen1_Button2(lv_event_t * e)
 {

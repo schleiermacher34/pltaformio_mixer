@@ -58,7 +58,7 @@ void check_heap() {
 #define LVGL_TASK_MIN_DELAY_MS  (5) // Adjusted delay for stability
 #define LVGL_TASK_STACK_SIZE    (10 * 1024) // Increased stack size for LVGL
 #define LVGL_TASK_PRIORITY      (2)
-#define LVGL_BUF_SIZE           (ESP_PANEL_LCD_H_RES * 20)
+#define LVGL_BUF_SIZE           (ESP_PANEL_LCD_H_RES * ESP_PANEL_LCD_V_RES / 10)
 
 /* Define constants for the program data */
 #define MAX_STEPS 3  // Maximum steps in a program
@@ -786,10 +786,12 @@ void event_handler_start_motor_button(lv_event_t * e) {
             if (result == ESP_OK) {
                 // Create a task to run the program
                 xTaskCreate(runProgramTask, "Run Program Task", 2046, (void*)programData, 1, NULL);
+                lv_obj_set_style_bg_color(ui_Screen1_Button4, lv_color_hex(0x151515),LV_PART_MAIN | LV_STATE_DEFAULT);
             } else {
                 Serial.println("Failed to load program data.");
                 free(programData);
             }
+            
         } else {
          uint8_t motorID = getSelectedMotorID();
 
@@ -837,6 +839,7 @@ void event_handler_start_motor_button(lv_event_t * e) {
         }
 
         Serial.println("Motor started with the selected direction.");
+        lv_obj_set_style_bg_color(ui_Screen1_Button4, lv_color_hex(0x151515),LV_PART_MAIN | LV_STATE_DEFAULT);
         }
     }
 }
@@ -877,7 +880,7 @@ void event_handler_change_speed_button(lv_event_t * e) {
         // Get the speed value from the Roller
         lvgl_port_lock(-1);
         uint16_t rpm = lv_roller_get_selected(ui_Screen3_Roller1) + MIN_SPEED_RPM;
-        lv_label_set_text_fmt(ui_Screen1_Label11, "Current speed: %u", rpm);       
+        lv_label_set_text_fmt(ui_Screen1_Label11, " %u", rpm);       
         lvgl_port_unlock();
     
         // Convert RPM to Hertz
@@ -909,6 +912,69 @@ void event_handler_change_speed_button(lv_event_t * e) {
         }
     }
 }
+
+void update_arc_values_from_label() {
+    // Lock the LVGL mutex
+    lvgl_port_lock(-1);
+
+    // Get the text from the labels
+    const char* label_text1 = lv_label_get_text(ui_Screen1_Label2);
+    const char* label_text2 = lv_label_get_text(ui_Screen1_Label11);
+
+    // Check if either label text is NULL
+    if (label_text1 == NULL || label_text2 == NULL) {
+        Serial.println("One or both label texts are NULL");
+        lvgl_port_unlock();
+        return;
+    }
+
+    Serial.printf("Label 1 text: %s\n", label_text1);
+    Serial.printf("Label 2 text: %s\n", label_text2);
+
+    // Unlock LVGL mutex as we don't need to hold it during parsing
+    lvgl_port_unlock();
+
+    // Convert label texts to numerical values
+    char *endptr1;
+    char *endptr2;
+    int value1 = strtol(label_text1, &endptr1, 10);
+    int value2 = strtol(label_text2, &endptr2, 10);
+
+    // Check for invalid conversion
+    if (*endptr1 != '\0') {
+        Serial.printf("Invalid number in Label 1 text: %s\n", label_text1);
+        value1 = 0; // Set to default or handle error as needed
+    }
+
+    if (*endptr2 != '\0') {
+        Serial.printf("Invalid number in Label 2 text: %s\n", label_text2);
+        value2 = 0; // Set to default or handle error as needed
+    }
+
+    // Clamp values to valid range (e.g., 0 to 100)
+    if (value1 < 0) value1 = 0;
+    if (value1 > 100) value1 = 100;
+
+    if (value2 < 0) value2 = 0;
+    if (value2 > 100) value2 = 100;
+
+    Serial.printf("Converted value1: %d\n", value1);
+    Serial.printf("Converted value2: %d\n", value2);
+
+    // Lock LVGL mutex before updating UI elements
+    lvgl_port_lock(-1);
+
+    // Set the value of the arcs
+    lv_arc_set_value(ui_Screen1_Arc1, value1);
+    lv_arc_set_value(ui_Screen1_Arc2, value2);
+
+    // Unlock the LVGL mutex
+    lvgl_port_unlock();
+
+    Serial.println("Arc values updated from labels.");
+}
+
+
 
 
 
@@ -1076,6 +1142,9 @@ void vfdReadTask(void *pvParameters) {
 }
 
 
+
+
+
 void setup() {
     Serial.begin(115200);
     Serial.setDebugOutput(true);
@@ -1185,6 +1254,7 @@ panel->init();  // Call the init function directly, since it returns void
 }
 
     /* Attach event handlers (check for null pointers) */
+
     if (ui_Screen2_Button8) {
         lv_obj_add_event_cb(ui_Screen2_Button8, event_handler_scan_button, LV_EVENT_CLICKED, NULL);
     } else {
@@ -1235,6 +1305,11 @@ panel->init();  // Call the init function directly, since it returns void
   } else {
     Serial.println("ui_Screen3_Dropdown1 is NULL");
   }
+  if (ui_Screen1_Button4){
+    lv_obj_add_event_cb(ui_Screen1_Button4, event_handler_stop_motor_button, LV_EVENT_CLICKED, NULL);
+  }else{
+    Serial.println("ui_Screen1_Button4 is NULL");
+  }
 
 
 
@@ -1259,8 +1334,9 @@ panel->init();  // Call the init function directly, since it returns void
   // xTaskCreate(otaUpdateTask, "OTA Update Task", 16384, NULL, 1, &otaTaskHandle); // Increase stack size
 
     xTaskCreate(saveProgramTask, "Save Program Task", 2046, NULL, 1, NULL);
-   // xTaskCreate(runProgramTask, "Run Program Task", 2046, NULL, 1, NULL);
-    //xTaskCreate(vfdReadTask, "VFD Read Task", 2046, NULL, 3, NULL); // VFD Read task
+
+
+
 
     /* Initialize Modbus Serial */
     pinMode(MODBUS_DE_RE_PIN, OUTPUT);
