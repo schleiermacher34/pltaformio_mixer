@@ -4,7 +4,6 @@
 #include <ESP_IOExpander_Library.h>
 #include <ui.h>
 #include "esp_log.h"
-
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <Update.h>
@@ -16,8 +15,9 @@
 #include <nvs_flash.h>
 #include "esp_ota_ops.h"  // Include ESP-IDF OTA operations
 #include <ModbusRTU.h>    // Include emelianov's ModbusRTU library
-
-
+#include <esp_system.h>
+#include <esp_partition.h>
+#include <mbedtls/sha256.h>
 // Place the restartDevice function
 void restartDevice() {
     Serial.println("Device will restart in 5 seconds...");
@@ -62,11 +62,11 @@ void check_heap() {
 
 /* Define constants for the program data */
 #define MAX_STEPS 3  // Maximum steps in a program
-/* Server configuration */
-const char* host = "192.168.1.100"; // Replace with your Django server IP
-const int port = 8000;
-String currentVersion = "1.0.0"; // Current firmware version
-/* Global variable to store speed */
+// OTA update server details
+// Device current firmware version
+#define CURRENT_FIRMWARE_VERSION "1.0.0"
+const char* host = "https://schleiermacher34.pythonanywhere.com/firmware/check_update/"; // Corrected: No port needed for PythonAnywhere
+
 
 
 
@@ -75,10 +75,14 @@ TaskHandle_t otaTaskHandle = NULL;
 SemaphoreHandle_t lvgl_mux = NULL; // LVGL mutex
 SemaphoreHandle_t wifi_connect_semaphore = NULL;
 SemaphoreHandle_t wifi_scan_semaphore = NULL;
-SemaphoreHandle_t ota_semaphore = NULL;
+SemaphoreHandle_t otaSemaphore = NULL;
 SemaphoreHandle_t save_program_semaphore = NULL; // Semaphore for saving program
 SemaphoreHandle_t run_program_semaphore = NULL;
 SemaphoreHandle_t nvs_mutex;
+
+
+// Forward declaration of the OTA update task
+void otaUpdateTask(void* parameter);
 
 /* Structure to hold the program data */
 struct ProgramData {
@@ -96,13 +100,7 @@ typedef struct {
     // Add other settings as needed
 } MotorConfig;
 
-
-
 ESP_Panel *panel = NULL;
-
-// Forward declaration of otaUpdateTask
-void otaUpdateTask(void* parameter);
-
 
 /* Modbus Configuration */
 #define MODBUS_TX_PIN 44        // Example GPIO pin for UART1 TX
@@ -221,66 +219,7 @@ void lvgl_port_task(void *arg) {
     }
 }
 
-void otaUpdateTask(void* parameter) {
-    if (xSemaphoreTake(ota_semaphore, portMAX_DELAY) == pdTRUE) {
-        Serial.println("Starting OTA update...");
 
-        // Check if WiFi is connected
-        if (WiFi.status() != WL_CONNECTED) {
-            Serial.println("WiFi not connected. Aborting OTA update.");
-            xSemaphoreGive(ota_semaphore);
-            vTaskDelete(NULL);
-            return;
-        }
-
-        String firmwareUrl = String("http://") + host + ":" + port + "/firmware.bin";
-        HTTPClient http;
-        http.begin(firmwareUrl);
-        int httpCode = http.GET();
-
-        if (httpCode == HTTP_CODE_OK) {
-            int contentLength = http.getSize();
-            WiFiClient* client = http.getStreamPtr();
-
-            if (contentLength > 0) {
-                bool canBegin = Update.begin(contentLength);
-
-                if (canBegin) {
-                    Serial.println("Begin OTA. This may take some time...");
-                    size_t written = Update.writeStream(*client);
-
-                    if (written == contentLength) {
-                        Serial.println("Written : " + String(written) + " successfully");
-                    } else {
-                        Serial.println("Written only : " + String(written) + "/" + String(contentLength) + ". Retry?\n");
-                    }
-
-                    if (Update.end()) {
-                        if (Update.isFinished()) {
-                            Serial.println("OTA update successfully completed. Rebooting...");
-                            esp_restart();
-                        } else {
-                            Serial.println("OTA update not finished. Something went wrong!");
-                        }
-                    } else {
-                        Serial.println("Error #: " + String(Update.getError()));
-                    }
-                } else {
-                    Serial.println("Not enough space to begin OTA");
-                }
-            } else {
-                Serial.println("Content-Length not defined");
-            }
-        } else {
-            Serial.println("Error on HTTP request");
-        }
-
-        http.end();
-        xSemaphoreGive(ota_semaphore);
-    }
-
-    vTaskDelete(NULL);
-}
 
 
 
@@ -317,6 +256,197 @@ extern lv_obj_t *ui_Screen5_Button3;    // Save program button
 extern lv_obj_t *ui_Screen1_Label11;
 extern lv_obj_t *ui_Screen1_Label2;
 extern lv_obj_t *ui_Screen3_Button5;
+
+
+
+
+bool verifyChecksum(WiFiClient* stream, int contentLength, const char* expectedChecksum) {
+    mbedtls_sha256_context ctx;
+    mbedtls_sha256_init(&ctx);
+    mbedtls_sha256_starts_ret(&ctx, 0); // 0 for SHA-256, 1 for SHA-224
+
+    int remaining = contentLength;
+    uint8_t buff[1024];
+    while (remaining > 0) {
+        int len = stream->readBytes(buff, sizeof(buff));
+        if (len > 0) {
+            mbedtls_sha256_update_ret(&ctx, buff, len);
+            remaining -= len;
+        } else {
+            Serial.println("Stream read error during checksum calculation");
+            mbedtls_sha256_free(&ctx);
+            return false;
+        }
+    }
+
+    uint8_t hash[32];
+    mbedtls_sha256_finish_ret(&ctx, hash);
+    mbedtls_sha256_free(&ctx);
+
+    // Convert hash to hex string
+    char hashString[65];
+    for (int i = 0; i < 32; i++) {
+        sprintf(&hashString[i * 2], "%02x", hash[i]);
+    }
+    hashString[64] = '\0';
+
+    Serial.print("Calculated checksum: ");
+    Serial.println(hashString);
+    Serial.print("Expected checksum: ");
+    Serial.println(expectedChecksum);
+
+    return strcmp(hashString, expectedChecksum) == 0;
+}
+
+void performOTAUpdate(const char* firmwareUrl) {
+    Serial.println("Starting OTA update...");
+
+    WiFiClientSecure client;  // Secure client for HTTPS
+    client.setInsecure();  // Ignore SSL certificate validation (for testing)
+    
+    HTTPClient http;
+
+    if (http.begin(client, firmwareUrl)) {  // Use the secure client with the full URL
+        int httpCode = http.GET();
+
+        if (httpCode == HTTP_CODE_OK) {
+            int contentLength = http.getSize();
+            WiFiClient* stream = http.getStreamPtr();
+
+            if (contentLength > 0) {
+                const esp_partition_t* updatePartition = esp_ota_get_next_update_partition(NULL);
+                if (updatePartition == NULL) {
+                    Serial.println("Could not find valid OTA partition.");
+                    http.end();
+                    return;
+                }
+
+                esp_ota_handle_t otaHandle = 0;
+                esp_err_t err = esp_ota_begin(updatePartition, OTA_SIZE_UNKNOWN, &otaHandle);
+                if (err != ESP_OK) {
+                    Serial.printf("esp_ota_begin failed: %s\n", esp_err_to_name(err));
+                    http.end();
+                    return;
+                }
+
+                Serial.println("OTA update in progress...");
+
+                int written = 0;
+                uint8_t buff[2048] = { 0 };
+                while (http.connected() && written < contentLength) {
+                    int len = stream->readBytes(buff, sizeof(buff));
+                    if (len > 0) {
+                        err = esp_ota_write(otaHandle, buff, len);
+                        if (err != ESP_OK) {
+                            Serial.printf("esp_ota_write failed: %s\n", esp_err_to_name(err));
+                            esp_ota_end(otaHandle);
+                            http.end();
+                            return;
+                        }
+                        written += len;
+                        Serial.printf("Written %d of %d bytes\n", written, contentLength);
+                    } else {
+                        Serial.println("Stream read timeout or error");
+                        break;
+                    }
+                }
+
+                if (esp_ota_end(otaHandle) != ESP_OK) {
+                    Serial.println("Error with OTA end");
+                    http.end();
+                    return;
+                }
+
+                err = esp_ota_set_boot_partition(updatePartition);
+                if (err != ESP_OK) {
+                    Serial.printf("esp_ota_set_boot_partition failed: %s\n", esp_err_to_name(err));
+                    http.end();
+                    return;
+                }
+
+                Serial.println("OTA update successful. Rebooting...");
+                http.end();
+                esp_restart();
+            } else {
+                Serial.println("Content-Length is zero or not provided");
+            }
+        } else {
+            Serial.printf("HTTP request failed: %d\n", httpCode);
+        }
+
+        http.end();
+    } else {
+        Serial.println("Unable to connect to firmware URL");
+    }
+}
+
+void checkForUpdates() {
+    Serial.println("Checking for firmware updates...");
+    HTTPClient http;
+    http.begin(host); // Checking for update with full path
+
+    int httpCode = http.GET();
+    if (httpCode == HTTP_CODE_OK) {
+        String payload = http.getString();
+        Serial.println("Received payload:");
+        Serial.println(payload);
+
+        // Parse the response
+        DynamicJsonDocument doc(1024);
+        DeserializationError error = deserializeJson(doc, payload);
+        if (error) {
+            Serial.println("Failed to parse JSON");
+            return;
+        }
+
+        bool updateAvailable = doc["update_available"];
+        const char* newVersion = doc["version"];
+        const char* firmwareUrl = doc["url"]; // Correct: Using URL from server
+
+        if (updateAvailable) {
+            Serial.printf("Update available! New version: %s\n", newVersion);
+            Serial.printf("Firmware URL: %s\n", firmwareUrl);
+            performOTAUpdate(firmwareUrl); // Correct: Using full firmware URL
+        } else {
+            Serial.println("No update available.");
+        }
+    } else {
+        Serial.printf("Failed to check for updates. HTTP error: %d\n", httpCode);
+    }
+
+    http.end();
+}
+void otaUpdateTask(void* parameter) {
+    while (1) {
+        // Wait indefinitely for the semaphore to be given
+        if (xSemaphoreTake(otaSemaphore, portMAX_DELAY) == pdTRUE) {
+            Serial.println("Starting OTA update task...");
+
+            // Call the function to check for updates and perform the OTA update
+            checkForUpdates();
+
+            // Optionally, you can add a delay or reset variables here
+        }
+    }
+
+    // Clean up the task if it ever exits (should not happen in this case)
+    vTaskDelete(NULL);
+}
+
+void event_handler_ota_update(lv_event_t * e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        Serial.println("OTA Update Button Pressed.");
+
+        // Give the semaphore to start the OTA update task
+        if (otaSemaphore != NULL) {
+            xSemaphoreGive(otaSemaphore);
+            Serial.println("OTA update triggered.");
+        } else {
+            Serial.println("OTA semaphore is NULL. Cannot trigger OTA update.");
+        }
+    }
+}
+
 
 /* Event Handler for Save Program Button */
 void event_handler_save_program_button(lv_event_t * e) {
@@ -1086,17 +1216,6 @@ void event_handler_connect_button(lv_event_t * e) {
     xSemaphoreGive(wifi_connect_semaphore);  // Unblock the Wi-Fi connection task
 }
 
-void update_button_event_handler(lv_event_t* e) {
-    lv_event_code_t code = lv_event_get_code(e);
-    if (code == LV_EVENT_CLICKED) {
-        // Disable the button to prevent multiple presses
-        lvgl_port_lock(-1);
-        lv_obj_add_state(ui_Screen2_Button10, LV_STATE_DISABLED);
-        lvgl_port_unlock();
-
-        
-    }
-}
 
 /* Modbus Task */
 void modbusTask(void *pvParameters) {
@@ -1140,9 +1259,6 @@ void vfdReadTask(void *pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(10000)); // Read every 5 seconds
     }
 }
-
-
-
 
 
 void setup() {
@@ -1217,16 +1333,7 @@ panel->init();  // Call the init function directly, since it returns void
 
 
 
-    /* Check OTA update state */
-    esp_ota_img_states_t ota_state;
-    const esp_partition_t *running = esp_ota_get_running_partition();
-    if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
-        if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
-           Serial.println("New app is pending verification...");
-            esp_ota_mark_app_valid_cancel_rollback();
-            Serial.println("App marked as valid.");
-       }
-   }
+
 
     /* Initialize UI */
     ui_init();
@@ -1246,7 +1353,25 @@ panel->init();  // Call the init function directly, since it returns void
 
         // Initialize the NVS mutex
     nvs_mutex = xSemaphoreCreateMutex();
+   // Check if the firmware is pending verification
+    esp_ota_img_states_t otaState;
+    const esp_partition_t* runningPartition = esp_ota_get_running_partition();
+    if (esp_ota_get_state_partition(runningPartition, &otaState) == ESP_OK) {
+        if (otaState == ESP_OTA_IMG_PENDING_VERIFY) {
+            Serial.println("Firmware is pending verification. Confirming now...");
 
+            // Perform any additional checks here (e.g., sensor initialization)
+            // If everything is okay, confirm the firmware
+            esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+            if (err == ESP_OK) {
+                Serial.println("Firmware marked as valid.");
+            } else {
+                Serial.printf("Failed to mark firmware as valid: %s\n", esp_err_to_name(err));
+                // Optionally, initiate a rollback
+                // esp_ota_mark_app_invalid_rollback_and_reboot();
+            }
+        }
+    }
 
  if(!buf) {
     Serial.println("Error: Failed to allocate LVGL buffer");
@@ -1268,7 +1393,7 @@ panel->init();  // Call the init function directly, since it returns void
     }
 
     if (ui_Screen2_Button10) {
-        lv_obj_add_event_cb(ui_Screen2_Button10, update_button_event_handler, LV_EVENT_CLICKED, NULL);
+        lv_obj_add_event_cb(ui_Screen2_Button10, event_handler_ota_update, LV_EVENT_CLICKED, NULL);
     } else {
         Serial.println("ui_Screen2_Button10 is NULL");
     }
@@ -1314,25 +1439,23 @@ panel->init();  // Call the init function directly, since it returns void
 
 
     /* Create semaphores */
-    //ota_semaphore = xSemaphoreCreateBinary();
-    // Create the semaphore for saving the program
-    save_program_semaphore = xSemaphoreCreateBinary();
-  //  run_program_semaphore = xSemaphoreCreateBinary();
+      otaSemaphore = xSemaphoreCreateBinary();
 
-//     /* Initialize semaphores */
-//    // xSemaphoreGive(ota_semaphore);
-//     xSemaphoreGive(save_program_semaphore);
-//     xSemaphoreGive(run_program_semaphore);
+    save_program_semaphore = xSemaphoreCreateBinary();
     
     wifi_connect_semaphore = xSemaphoreCreateBinary();
     wifi_scan_semaphore = xSemaphoreCreateBinary();
+    // Create the OTA update task
+    
 
+    // Start the OTA update (for testing purposes, you can trigger this from an event)
+    xSemaphoreGive(otaSemaphore);
     /* Create tasks */
     xTaskCreate(wifi_connect_task, "WiFi Connect Task", 2046, NULL, 1, NULL);
     xTaskCreate(wifi_scan_task, "WiFi Scan Task", 2046, NULL, 1, NULL);
     // xTaskCreate(guiTask, "GUI Task", 2046, NULL, 1, NULL);
   // xTaskCreate(otaUpdateTask, "OTA Update Task", 16384, NULL, 1, &otaTaskHandle); // Increase stack size
-
+    xTaskCreate(otaUpdateTask, "OTA Update Task", 8192, NULL, 1, NULL);
     xTaskCreate(saveProgramTask, "Save Program Task", 2046, NULL, 1, NULL);
 
 
