@@ -185,6 +185,8 @@ void lvgl_port_unlock(void)
     xSemaphoreGiveRecursive(lvgl_mux);
 }
 
+bool ota_in_progress = false;
+
 void lvgl_port_task(void *arg) {
     Serial.println("Starting LVGL task");
 
@@ -215,12 +217,16 @@ void lvgl_port_task(void *arg) {
         } else if (task_delay_ms < LVGL_TASK_MIN_DELAY_MS) {
             task_delay_ms = LVGL_TASK_MIN_DELAY_MS;
         }
+
+ if (ota_in_progress) {
+            vTaskDelay(pdMS_TO_TICKS(100)); // Increase delay during OTA to reduce screen updates
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(LVGL_TASK_MIN_DELAY_MS));
+        }
+
         vTaskDelay(pdMS_TO_TICKS(task_delay_ms));
     }
 }
-
-
-
 
 
 /* UI Elements */
@@ -298,15 +304,145 @@ bool verifyChecksum(WiFiClient* stream, int contentLength, const char* expectedC
     return strcmp(hashString, expectedChecksum) == 0;
 }
 
-void performOTAUpdate(const char* firmwareUrl) {
+
+uint16_t orig_anim_speed = 100; // Default animation speed
+uint16_t orig_refresh_rate = 60; // Default refresh rate
+
+void reduce_display_refresh_rate() {
+    lvgl_port_lock(-1);
+
+
+     lv_anim_del_all();
+    // lv_disp_t *disp = lv_disp_get_default();
+    // if (disp) {
+    //     // Store original animation speed and refresh rate
+    //     orig_anim_speed = lv_disp_get_anim_speed(disp);
+    //     orig_refresh_rate = lv_disp_get_refresh_rate(disp);
+
+    //     // Reduce animation speed and refresh rate
+    //     lv_disp_set_anim_speed(disp, 0);    // Stop animations
+    //     lv_disp_set_refresh_rate(disp, 10); // Reduce refresh rate to 10 Hz
+    // }
+
+    lvgl_port_unlock();
+}
+
+
+void restore_display_refresh_rate() {
+    lvgl_port_lock(-1);
+
+    // lv_disp_t *disp = lv_disp_get_default();
+    // if (disp) {
+    //     // Restore original animation speed and refresh rate
+    //     lv_disp_set_anim_speed(disp, orig_anim_speed);
+    //     lv_disp_set_refresh_rate(disp, orig_refresh_rate);
+    // }
+
+    lvgl_port_unlock();
+}
+
+
+void hide_ui_elements_for_ota() {
+    // Lock LVGL
+    lvgl_port_lock(-1);
+
+    // Hide unnecessary UI elements during OTA
+    lv_obj_add_flag(ui_Screen2_Dropdown2, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui_Screen2_Button8, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui_Screen2_Button9, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui_Screen2_Button10, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui_Screen2_Panel3, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui_Screen2_Button12, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_bg_color(ui_Screen2, lv_color_hex(0x151515), LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    // Unlock LVGL
+    lvgl_port_unlock();
+}
+
+void show_ui_elements_after_ota() {
+    // Lock LVGL
+    lvgl_port_lock(-1);
+
+    // Show UI elements again
+    lv_obj_clear_flag(ui_Screen2_Dropdown2, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(ui_Screen2_Button8, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(ui_Screen2_Button9, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(ui_Screen2_Button10, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(ui_Screen2_Panel3, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(ui_Screen2_Button12, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_bg_color(ui_Screen2, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    // Unlock LVGL
+    lvgl_port_unlock();
+}
+
+
+lv_obj_t* ota_progress_bar;
+
+void create_ota_progress_bar() {
+    lvgl_port_lock(-1); // Lock LVGL
+
+    // Create a progress bar on the display
+    ota_progress_bar = lv_bar_create(lv_scr_act());  // Create on the active screen
+    lv_obj_set_size(ota_progress_bar, 200, 30);       // Set size
+    lv_obj_align(ota_progress_bar, LV_ALIGN_CENTER, 0, 0); // Align to center
+    lv_bar_set_range(ota_progress_bar, 0, 100);       // Set range 0 to 100
+    lv_bar_set_value(ota_progress_bar, 0, LV_ANIM_OFF); // Initialize to 0%
+     Serial.printf("ota_progress_bar created at address: %p\n", (void*)ota_progress_bar);
+
+    lvgl_port_unlock(); // Unlock LVGL
+}
+
+
+
+volatile bool ota_progress_bar_deleting = false;
+
+void update_ota_progress_bar(int progress) {
+    if (ota_progress_bar_deleting) {
+        // Skip updating if the progress bar is being deleted
+        return;
+    }
+
+    lvgl_port_lock(-1); // Lock LVGL
+
+    if (ota_progress_bar != NULL) {
+        lv_bar_set_value(ota_progress_bar, progress, LV_ANIM_OFF);  // Update progress bar
+    }
+
+    lvgl_port_unlock(); // Unlock LVGL
+}
+
+void remove_ota_progress_bar() {
+    ota_progress_bar_deleting = true;
+
+    lvgl_port_lock(-1); // Lock LVGL
+
+    if (ota_progress_bar != NULL) {
+        lv_anim_del(ota_progress_bar, NULL);
+        lv_obj_remove_event_cb(ota_progress_bar, NULL);
+        lv_obj_del_async(ota_progress_bar);
+        ota_progress_bar = NULL;
+        Serial.println("ota_progress_bar deleted successfully.");
+    } else {
+        Serial.println("ota_progress_bar is already NULL.");
+    }
+
+    lvgl_port_unlock(); // Unlock LVGL
+
+    ota_progress_bar_deleting = false;
+}
+
+
+
+
+void performOTAUpdate(const String& firmwareUrl) {
     Serial.println("Starting OTA update...");
 
-    WiFiClientSecure client;  // Secure client for HTTPS
-    client.setInsecure();  // Ignore SSL certificate validation (for testing)
-    
-    HTTPClient http;
+    WiFiClientSecure client; // Use WiFiClient for HTTP, WiFiClientSecure for HTTPS
+   client.setInsecure(); // Uncomment if using HTTPS without certificate validation
 
-    if (http.begin(client, firmwareUrl)) {  // Use the secure client with the full URL
+    HTTPClient http;
+    if (http.begin(client, firmwareUrl)) {
         int httpCode = http.GET();
 
         if (httpCode == HTTP_CODE_OK) {
@@ -332,23 +468,54 @@ void performOTAUpdate(const char* firmwareUrl) {
                 Serial.println("OTA update in progress...");
 
                 int written = 0;
-                uint8_t buff[2048] = { 0 };
+                uint8_t buff[1024] = { 0 };
+
+                // **Set the stream timeout before the OTA update loop**
+                stream->setTimeout(5000); // Set timeout to 5000 milliseconds (5 seconds)
+
+                int retryCount = 0;
+                const int maxRetries = 5;
+
                 while (http.connected() && written < contentLength) {
                     int len = stream->readBytes(buff, sizeof(buff));
                     if (len > 0) {
+                        // Reset retry count after a successful read
+                        retryCount = 0;
+
                         err = esp_ota_write(otaHandle, buff, len);
                         if (err != ESP_OK) {
                             Serial.printf("esp_ota_write failed: %s\n", esp_err_to_name(err));
-                            esp_ota_end(otaHandle);
+                            esp_ota_abort(otaHandle);
                             http.end();
                             return;
                         }
                         written += len;
-                        Serial.printf("Written %d of %d bytes\n", written, contentLength);
+
+                        // Update progress bar
+                        int progress = (written * 100) / contentLength;
+                        update_ota_progress_bar(progress);
+
+                        Serial.printf("Written %d of %d bytes (%d%% complete)\n", written, contentLength, progress);
                     } else {
-                        Serial.println("Stream read timeout or error");
-                        break;
+                        if (retryCount < maxRetries) {
+                            retryCount++;
+                            Serial.printf("Stream read timeout, retrying... (%d/%d)\n", retryCount, maxRetries);
+                            continue; // Retry reading
+                        } else {
+                            Serial.println("Maximum retries reached. Aborting OTA update.");
+                            esp_ota_abort(otaHandle);
+                            http.end();
+                            return;
+                        }
                     }
+                }
+
+                // Verify that the entire content was received
+                if (written != contentLength) {
+                    Serial.println("Download incomplete. Aborting OTA update.");
+                    esp_ota_abort(otaHandle);
+                    http.end();
+                    return;
                 }
 
                 if (esp_ota_end(otaHandle) != ESP_OK) {
@@ -366,6 +533,13 @@ void performOTAUpdate(const char* firmwareUrl) {
 
                 Serial.println("OTA update successful. Rebooting...");
                 http.end();
+
+                // Optionally display 100% on progress bar
+                update_ota_progress_bar(100);
+
+                // Delay to allow the UI to update before rebooting
+                vTaskDelay(pdMS_TO_TICKS(1000));
+
                 esp_restart();
             } else {
                 Serial.println("Content-Length is zero or not provided");
@@ -380,64 +554,105 @@ void performOTAUpdate(const char* firmwareUrl) {
     }
 }
 
+
 void checkForUpdates() {
     Serial.println("Checking for firmware updates...");
+
+    String updateCheckUrl = host; // Use the host as the update check URL
+
+    WiFiClientSecure client;
+    client.setInsecure(); // Disable certificate validation (for testing only)
+
     HTTPClient http;
-    http.begin(host); // Checking for update with full path
+    if (http.begin(client, updateCheckUrl)) {
+        int httpCode = http.GET();
 
-    int httpCode = http.GET();
-    if (httpCode == HTTP_CODE_OK) {
-        String payload = http.getString();
-        Serial.println("Received payload:");
-        Serial.println(payload);
+        if (httpCode == HTTP_CODE_OK) {
+            String payload = http.getString();
+            Serial.println("Received payload:");
+            Serial.println(payload);
 
-        // Parse the response
-        DynamicJsonDocument doc(1024);
-        DeserializationError error = deserializeJson(doc, payload);
-        if (error) {
-            Serial.println("Failed to parse JSON");
-            return;
-        }
+            DynamicJsonDocument doc(1024);
+            DeserializationError error = deserializeJson(doc, payload);
+            if (error) {
+                Serial.print("deserializeJson() failed: ");
+                Serial.println(error.c_str());
+                http.end();
+                return;
+            }
 
-        bool updateAvailable = doc["update_available"];
-        const char* newVersion = doc["version"];
-        const char* firmwareUrl = doc["url"]; // Correct: Using URL from server
+            bool updateAvailable = doc["update_available"];
+            String newVersion = doc["version"];
+            String firmwareDownloadUrl = doc["url"];
 
-        if (updateAvailable) {
-            Serial.printf("Update available! New version: %s\n", newVersion);
-            Serial.printf("Firmware URL: %s\n", firmwareUrl);
-            performOTAUpdate(firmwareUrl); // Correct: Using full firmware URL
+            if (updateAvailable) {
+                Serial.printf("Update available! New version: %s\n", newVersion.c_str());
+                Serial.printf("Firmware URL: %s\n", firmwareDownloadUrl.c_str());
+
+                // Close the http connection from the update check
+                http.end();
+
+                // Now, call performOTAUpdate with firmwareDownloadUrl
+                performOTAUpdate(firmwareDownloadUrl);
+
+            } else {
+                Serial.println("No updates available.");
+            }
         } else {
-            Serial.println("No update available.");
+            Serial.printf("Error checking for updates, HTTP response code: %d\n", httpCode);
         }
-    } else {
-        Serial.printf("Failed to check for updates. HTTP error: %d\n", httpCode);
-    }
 
-    http.end();
+        http.end();
+    } else {
+        Serial.println("Unable to connect to update server");
+    }
 }
+
 void otaUpdateTask(void* parameter) {
-    while (1) {
+    while (true) {
         // Wait indefinitely for the semaphore to be given
         if (xSemaphoreTake(otaSemaphore, portMAX_DELAY) == pdTRUE) {
             Serial.println("Starting OTA update task...");
 
-            // Call the function to check for updates and perform the OTA update
+            // Check if WiFi is connected
+            if (WiFi.status() != WL_CONNECTED) {
+                Serial.println("WiFi not connected. Aborting OTA update.");
+                continue; // Go back to waiting for the semaphore
+            }
+            ota_in_progress = true; // OTA is starting
+            // Hide UI elements and display progress bar
+            hide_ui_elements_for_ota();
+            create_ota_progress_bar();
+
+            // Adjust display settings to prevent blinking
+            reduce_display_refresh_rate();
+
+            // Proceed with the OTA update
+                        // Call checkForUpdates() to handle the OTA update process
             checkForUpdates();
 
-            // Optionally, you can add a delay or reset variables here
+            // Restore display settings after OTA update
+            restore_display_refresh_rate();
+
+            // Remove the progress bar and restore UI elements
+            
+            show_ui_elements_after_ota();
+            remove_ota_progress_bar();
+
+            ota_in_progress = false;
+            Serial.println("OTA update task completed.");
         }
     }
-
-    // Clean up the task if it ever exits (should not happen in this case)
-    vTaskDelete(NULL);
 }
+
+
+
+
 
 void event_handler_ota_update(lv_event_t * e) {
     if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
         Serial.println("OTA Update Button Pressed.");
 
-        // Give the semaphore to start the OTA update task
         if (otaSemaphore != NULL) {
             xSemaphoreGive(otaSemaphore);
             Serial.println("OTA update triggered.");
@@ -1435,31 +1650,23 @@ panel->init();  // Call the init function directly, since it returns void
   }else{
     Serial.println("ui_Screen1_Button4 is NULL");
   }
-
-
-
-    /* Create semaphores */
-      otaSemaphore = xSemaphoreCreateBinary();
-
     save_program_semaphore = xSemaphoreCreateBinary();
     
     wifi_connect_semaphore = xSemaphoreCreateBinary();
     wifi_scan_semaphore = xSemaphoreCreateBinary();
     // Create the OTA update task
-    
 
-    // Start the OTA update (for testing purposes, you can trigger this from an event)
-    xSemaphoreGive(otaSemaphore);
     /* Create tasks */
     xTaskCreate(wifi_connect_task, "WiFi Connect Task", 2046, NULL, 1, NULL);
     xTaskCreate(wifi_scan_task, "WiFi Scan Task", 2046, NULL, 1, NULL);
     // xTaskCreate(guiTask, "GUI Task", 2046, NULL, 1, NULL);
   // xTaskCreate(otaUpdateTask, "OTA Update Task", 16384, NULL, 1, &otaTaskHandle); // Increase stack size
-    xTaskCreate(otaUpdateTask, "OTA Update Task", 8192, NULL, 1, NULL);
+   // Create the OTA semaphore
+    otaSemaphore = xSemaphoreCreateBinary();
+
+    // Create the OTA update task
+    xTaskCreate(otaUpdateTask, "OTA Update Task", 16384, NULL, 1, &otaTaskHandle);
     xTaskCreate(saveProgramTask, "Save Program Task", 2046, NULL, 1, NULL);
-
-
-
 
     /* Initialize Modbus Serial */
     pinMode(MODBUS_DE_RE_PIN, OUTPUT);
@@ -1485,4 +1692,3 @@ panel->init();  // Call the init function directly, since it returns void
 void loop() {
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
-
