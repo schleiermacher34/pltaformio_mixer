@@ -9,7 +9,6 @@
 ///////////////////// VARIABLES ////////////////////
 
 
-
 // SCREEN: ui_Screen1
 void ui_Screen1_screen_init(void);
 lv_obj_t * ui_Screen1;
@@ -33,6 +32,11 @@ void ui_event_Screen1_Button3(lv_event_t * e);
 lv_obj_t * ui_Screen1_Button3;
 lv_obj_t * ui_Screen1_Label3;
 lv_obj_t * ui_Screen1_Label2;
+lv_obj_t * ui_Screen1_Panel2;
+lv_obj_t * ui_Screen1_Label5;
+lv_obj_t * ui_Screen1_Label4;
+lv_obj_t * ui_Screen1_Button1;
+lv_obj_t * ui_Screen1_Label7;
 
 
 // SCREEN: ui_Screen2
@@ -51,14 +55,20 @@ lv_obj_t * ui_Screen2_Label6;
 lv_obj_t * ui_Screen2_Label7;
 void ui_event_Screen2_TextArea2(lv_event_t * e);
 lv_obj_t * ui_Screen2_TextArea2;
-lv_obj_t * ui_Screen2_Keyboard1;
-void ui_event_Screen2_Button11(lv_event_t * e);
-lv_obj_t * ui_Screen2_Button11;
-lv_obj_t * ui_Screen2_Label14;
 void ui_event_Screen2_Button12(lv_event_t * e);
 lv_obj_t * ui_Screen2_Button12;
 void ui_event_Screen2_Label15(lv_event_t * e);
 lv_obj_t * ui_Screen2_Label15;
+lv_obj_t * ui_Screen2_Panel4;
+lv_obj_t * ui_Screen2_Label3;
+void ui_event_Screen2_Label8(lv_event_t * e);
+lv_obj_t * ui_Screen2_Label8;
+lv_obj_t * ui_Screen2_Image3;
+lv_obj_t * ui_Screen2_Label1;
+lv_obj_t * ui_Screen2_Keyboard1;
+void ui_event_Screen2_Button1(lv_event_t * e);
+lv_obj_t * ui_Screen2_Button1;
+lv_obj_t * ui_Screen2_Label4;
 
 
 // SCREEN: ui_Screen3
@@ -97,6 +107,11 @@ void ui_event_Screen3_Button5(lv_event_t * e);
 lv_obj_t * ui_Screen3_Button5;
 lv_obj_t * ui_Screen3_Label7;
 lv_obj_t * ui_Screen3_Label4;
+lv_obj_t * ui_Screen1_Panel4;
+lv_obj_t * ui_Screen1_Label15;
+lv_obj_t * ui_Screen1_Label12;
+lv_obj_t * ui_Screen1_Button6;
+lv_obj_t * ui_Screen1_Label13;
 
 
 // SCREEN: ui_Screen5
@@ -148,8 +163,12 @@ lv_obj_t * ui_Screen3_Button1;
 lv_obj_t * ui_Screen3_Label32;
 lv_obj_t * ui_Screen5_Button3;
 lv_obj_t * ui_Screen5_Label1;
+lv_obj_t * ui_Screen1_Panel5;
+lv_obj_t * ui_Screen1_Label16;
+lv_obj_t * ui_Screen1_Label17;
+lv_obj_t * ui_Screen1_Button8;
+lv_obj_t * ui_Screen1_Label18;
 lv_obj_t * ui____initial_actions0;
-const lv_img_dsc_t * ui_imgset_2096297746[1] = {&ui_img_1863159612};
 
 ///////////////////// TEST LVGL SETTINGS ////////////////////
 #if LV_COLOR_DEPTH != 16
@@ -172,11 +191,11 @@ void ui_event_Screen1_Button7(lv_event_t * e)
 }
 void ui_event_Screen1_Arc1(lv_event_t * e)
 {
-    // lv_event_code_t event_code = lv_event_get_code(e);
-    // lv_obj_t * target = lv_event_get_target(e);
-    // if(event_code == LV_EVENT_CLICKED) {
-    //     _ui_arc_set_text_value(ui_Screen1_Label11, target, "", ".");
-    // }
+    lv_event_code_t event_code = lv_event_get_code(e);
+    lv_obj_t * target = lv_event_get_target(e);
+    if(event_code == LV_EVENT_CLICKED) {
+        update_arc_values_from_label(e);
+    }
 }
 void ui_event_Screen1_Button2(lv_event_t * e)
 {
@@ -213,14 +232,6 @@ void ui_event_Screen2_TextArea2(lv_event_t * e)
         _ui_flag_modify(ui_Screen2_Keyboard1, LV_OBJ_FLAG_HIDDEN, _UI_MODIFY_FLAG_TOGGLE);
     }
 }
-void ui_event_Screen2_Button11(lv_event_t * e)
-{
-    lv_event_code_t event_code = lv_event_get_code(e);
-    lv_obj_t * target = lv_event_get_target(e);
-    if(event_code == LV_EVENT_CLICKED) {
-        _ui_flag_modify(ui_Screen2_Keyboard1, LV_OBJ_FLAG_HIDDEN, _UI_MODIFY_FLAG_TOGGLE);
-    }
-}
 void ui_event_Screen2_Button12(lv_event_t * e)
 {
     lv_event_code_t event_code = lv_event_get_code(e);
@@ -235,6 +246,24 @@ void ui_event_Screen2_Label15(lv_event_t * e)
     lv_obj_t * target = lv_event_get_target(e);
     if(event_code == LV_EVENT_CLICKED) {
         _ui_screen_change(&ui_Screen1, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 10, 0, &ui_Screen1_screen_init);
+    }
+}
+void ui_event_Screen2_Label8(lv_event_t * e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+    lv_obj_t * target = lv_event_get_target(e);
+    if(event_code == LV_EVENT_VALUE_CHANGED) {
+        _ui_flag_modify(ui_Screen1_Panel2, LV_OBJ_FLAG_HIDDEN, _UI_MODIFY_FLAG_TOGGLE);
+        _ui_flag_modify(ui_Screen1_Panel4, LV_OBJ_FLAG_HIDDEN, _UI_MODIFY_FLAG_TOGGLE);
+        _ui_flag_modify(ui_Screen1_Panel5, LV_OBJ_FLAG_HIDDEN, _UI_MODIFY_FLAG_TOGGLE);
+    }
+}
+void ui_event_Screen2_Button1(lv_event_t * e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+    lv_obj_t * target = lv_event_get_target(e);
+    if(event_code == LV_EVENT_CLICKED) {
+        _ui_flag_modify(ui_Screen2_Keyboard1, LV_OBJ_FLAG_HIDDEN, _UI_MODIFY_FLAG_TOGGLE);
     }
 }
 void ui_event_Screen3_Button14(lv_event_t * e)

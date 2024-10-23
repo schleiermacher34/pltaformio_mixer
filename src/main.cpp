@@ -46,6 +46,7 @@ void check_heap() {
 #define LCD_RST 3
 #define SD_CS 4
 #define USB_SEL 5
+#define VSYNC_PIN 3 // Pin IO3 is used for VSYNC
 
 // I2C Pin define
 #define I2C_MASTER_NUM 0
@@ -79,6 +80,7 @@ SemaphoreHandle_t otaSemaphore = NULL;
 SemaphoreHandle_t save_program_semaphore = NULL; // Semaphore for saving program
 SemaphoreHandle_t run_program_semaphore = NULL;
 SemaphoreHandle_t nvs_mutex;
+SemaphoreHandle_t vsync_semaphore;
 
 
 // Forward declaration of the OTA update task
@@ -106,6 +108,11 @@ ESP_Panel *panel = NULL;
 #define MODBUS_TX_PIN 44        // Example GPIO pin for UART1 TX
 #define MODBUS_RX_PIN 43      // Example GPIO pin for UART1 RX
 #define MODBUS_DE_RE_PIN 4      // GPIO4 (DE/RE control pin)
+
+// Error related registers
+#define DRIVE_STATUS_REGISTER 0x2100
+#define ERROR_CODE_REGISTER 0x2101
+#define ALARM_STATUS_REGISTER 0x2226
 
 HardwareSerial ModbusSerial(1); // Use UART1
 ModbusRTU mb;                   // ModbusRTU instance
@@ -174,10 +181,10 @@ void lvgl_port_tp_read(lv_indev_drv_t * indev, lv_indev_data_t * data)
 }
 #endif
 
-void lvgl_port_lock(int timeout_ms)
+bool lvgl_port_lock(int timeout_ms)
 {
-    const TickType_t timeout_ticks = (timeout_ms < 0) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
-    xSemaphoreTakeRecursive(lvgl_mux, timeout_ticks);
+    const TickType_t timeout_ticks = (timeout_ms == -1) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
+    return xSemaphoreTakeRecursive(lvgl_mux, timeout_ticks) == pdTRUE;
 }
 
 void lvgl_port_unlock(void)
@@ -219,13 +226,26 @@ void lvgl_port_task(void *arg) {
         }
 
  if (ota_in_progress) {
-            vTaskDelay(pdMS_TO_TICKS(100)); // Increase delay during OTA to reduce screen updates
+            vTaskDelay(pdMS_TO_TICKS(300)); // Increase delay during OTA to reduce screen updates
         } else {
             vTaskDelay(pdMS_TO_TICKS(LVGL_TASK_MIN_DELAY_MS));
         }
 
         vTaskDelay(pdMS_TO_TICKS(task_delay_ms));
     }
+}
+void IRAM_ATTR vsync_isr() {
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    xSemaphoreGiveFromISR(vsync_semaphore, &xHigherPriorityTaskWoken);
+    if (xHigherPriorityTaskWoken) {
+        portYIELD_FROM_ISR();
+    }
+}
+
+void setupVsync() {
+    vsync_semaphore = xSemaphoreCreateBinary();
+    pinMode(VSYNC_PIN, INPUT_PULLUP); // Set IO3 as input with pull-up resistor
+    attachInterrupt(VSYNC_PIN, vsync_isr, RISING); // Trigger on rising edge of VSYNC
 }
 
 
@@ -262,6 +282,10 @@ extern lv_obj_t *ui_Screen5_Button3;    // Save program button
 extern lv_obj_t *ui_Screen1_Label11;
 extern lv_obj_t *ui_Screen1_Label2;
 extern lv_obj_t *ui_Screen3_Button5;
+extern lv_obj_t *ui_Screen2_Label1;
+extern lv_obj_t *ui_screen2_Image3;
+extern lv_obj_t *ui_screen2_Panel1;
+extern lv_obj_t *ui_screen2_Panel4;
 
 
 
@@ -303,6 +327,7 @@ bool verifyChecksum(WiFiClient* stream, int contentLength, const char* expectedC
 
     return strcmp(hashString, expectedChecksum) == 0;
 }
+
 
 
 uint16_t orig_anim_speed = 100; // Default animation speed
@@ -354,7 +379,9 @@ void hide_ui_elements_for_ota() {
     lv_obj_add_flag(ui_Screen2_Panel3, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui_Screen2_Button12, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_bg_color(ui_Screen2, lv_color_hex(0x151515), LV_PART_MAIN | LV_STATE_DEFAULT);
-
+    lv_obj_add_flag(ui_Screen2_Panel4, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(ui_Screen2_Label1, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(ui_Screen2_Image3, LV_OBJ_FLAG_HIDDEN);
     // Unlock LVGL
     lvgl_port_unlock();
 }
@@ -370,7 +397,10 @@ void show_ui_elements_after_ota() {
     lv_obj_clear_flag(ui_Screen2_Button10, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(ui_Screen2_Panel3, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(ui_Screen2_Button12, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_style_bg_color(ui_Screen2, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_Screen2, lv_color_hex(0x1F0675), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_add_flag(ui_Screen2_Label1, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui_Screen2_Image3, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(ui_Screen2_Panel4, LV_OBJ_FLAG_HIDDEN);
 
     // Unlock LVGL
     lvgl_port_unlock();
@@ -386,7 +416,7 @@ void create_ota_progress_bar() {
     ota_progress_bar = lv_bar_create(lv_scr_act());  // Create on the active screen
     lv_obj_set_size(ota_progress_bar, 200, 30);       // Set size
     lv_obj_align(ota_progress_bar, LV_ALIGN_CENTER, 0, 0); // Align to center
-    lv_bar_set_range(ota_progress_bar, 0, 100);       // Set range 0 to 100
+    lv_bar_set_range(ota_progress_bar, 0, 10);       // Set range 0 to 100
     lv_bar_set_value(ota_progress_bar, 0, LV_ANIM_OFF); // Initialize to 0%
      Serial.printf("ota_progress_bar created at address: %p\n", (void*)ota_progress_bar);
 
@@ -403,13 +433,17 @@ void update_ota_progress_bar(int progress) {
         return;
     }
 
-    lvgl_port_lock(-1); // Lock LVGL
+    if (xSemaphoreTake(vsync_semaphore, portMAX_DELAY) == pdTRUE) {
+        // Wait until VSYNC occurs to update the progress bar
 
-    if (ota_progress_bar != NULL) {
-        lv_bar_set_value(ota_progress_bar, progress, LV_ANIM_OFF);  // Update progress bar
+        lvgl_port_lock(-1); // Lock LVGL
+
+        if (ota_progress_bar != NULL) {
+            lv_bar_set_value(ota_progress_bar, progress, LV_ANIM_OFF);  // Update progress bar
+        }
+
+        lvgl_port_unlock(); // Unlock LVGL
     }
-
-    lvgl_port_unlock(); // Unlock LVGL
 }
 
 void remove_ota_progress_bar() {
@@ -1475,6 +1509,142 @@ void vfdReadTask(void *pvParameters) {
     }
 }
 
+String getSerialFromServer() {
+    if (WiFi.status() == WL_CONNECTED) {
+        HTTPClient http;
+        http.begin("https://schleiermacher34.pythonanywhere.com/devices/api/assign_serial_number/"); // Change to your server's URL
+        int httpCode = http.GET();
+        if (httpCode > 0) {
+            String response = http.getString();
+            Serial.println(response);
+            // Parse the response to get the serial number
+            // Save the serial number to NVS after receiving it
+        } else {
+            Serial.printf("Failed to retrieve serial number: %d\n", httpCode);
+        }
+        http.end();
+    } else {
+        Serial.println("WiFi not connected");
+    }
+    return ""; // Return the serial number or empty string on failure
+}
+
+void saveSerialToNVS(const char* serial) {
+    nvs_handle_t nvsHandle;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvsHandle);
+    if (err == ESP_OK) {
+        err = nvs_set_str(nvsHandle, "serial", serial);
+        if (err == ESP_OK) {
+            nvs_commit(nvsHandle);
+            Serial.println("Serial number saved successfully.");
+        } else {
+            Serial.println("Failed to save serial number.");
+        }
+        nvs_close(nvsHandle);
+    }
+}
+
+void sendAlarmToServer(uint16_t alarm_status) {
+    // Create an HTTP client
+    HTTPClient http;
+    
+    // Specify the server endpoint for error logging
+    String serverUrl = "http://schleiermacher34.pythonanywhere.com/api/send-alarm";
+
+    // Open a connection to the server
+    http.begin(serverUrl);
+
+    // Set the content type to JSON
+    http.addHeader("Content-Type", "application/json");
+
+    // Create a JSON object with the alarm status and other relevant info
+    StaticJsonDocument<200> jsonDoc;
+    jsonDoc["serial_number"] = "your_serial_number";  // Get serial number from NVS or config
+    jsonDoc["alarm_status"] = alarm_status;
+
+    // Convert the JSON object to a string
+    String jsonString;
+    serializeJson(jsonDoc, jsonString);
+
+    // Send the POST request with the JSON payload
+    int httpResponseCode = http.POST(jsonString);
+
+    // Check the response from the server
+    if (httpResponseCode > 0) {
+        Serial.printf("POST request sent, response code: %d\n", httpResponseCode);
+    } else {
+        Serial.printf("Error in sending POST: %s\n", http.errorToString(httpResponseCode).c_str());
+    }
+
+    // Close the connection
+    http.end();
+}
+
+
+
+void sendErrorToServer(uint16_t errorCode) {
+    if (WiFi.status() == WL_CONNECTED) {
+        HTTPClient http;
+        http.begin("http://schleiermacher34.pythonanywhere.com/log_error");
+        http.addHeader("Content-Type", "application/json");
+        DynamicJsonDocument doc(1024);
+        doc["serial"] = "your_serial"; // Retrieve serial from NVS
+        doc["error_code"] = errorCode;
+        String requestBody;
+        serializeJson(doc, requestBody);
+        int httpCode = http.POST(requestBody);
+        if (httpCode > 0) {
+            Serial.printf("Server response: %s\n", http.getString().c_str());
+        } else {
+            Serial.println("Error sending log to server.");
+        }
+        http.end();
+    } else {
+        Serial.println("WiFi not connected");
+    }
+}
+String readSerialFromNVS() {
+    nvs_handle_t nvsHandle;
+    char serial[32];
+    size_t length = sizeof(serial);
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvsHandle);
+    if (err == ESP_OK) {
+        err = nvs_get_str(nvsHandle, "serial", serial, &length);
+        if (err == ESP_OK) {
+            Serial.printf("Serial number: %s\n", serial);
+            return String(serial);
+        }
+        nvs_close(nvsHandle);
+    }
+    return "";
+}
+
+void checkVfdStatus() {
+    uint16_t error_code;
+    uint16_t motor_id = getSelectedMotorID();
+
+    if (mb.readHreg(motor_id, 0x2101, &error_code, 1)) {
+        char errorStr[10];
+        sprintf(errorStr, "%d", error_code);  // Convert error code to string
+        lv_label_set_text(ui_Screen2_Label8, errorStr);  // Update label with error code
+        sendErrorToServer(error_code);  // Send error to the server
+    } else {
+        Serial.println("Error reading VFD Error Code.");
+    }
+
+    uint16_t alarm_status;
+    if (mb.readHreg(motor_id, 0x2226, &alarm_status, 1)) {
+        char alarmStr[10];
+        sprintf(alarmStr, "%d", alarm_status);  // Convert alarm status to string
+        lv_label_set_text(ui_Screen2_Label8, alarmStr);  // Update label with alarm status
+        sendAlarmToServer(alarm_status);  // Make sure this function is defined
+    } else {
+        Serial.println("Error reading VFD Alarm Status.");
+    }
+}
+
+
+
 
 void setup() {
     Serial.begin(115200);
@@ -1650,6 +1820,8 @@ panel->init();  // Call the init function directly, since it returns void
   }else{
     Serial.println("ui_Screen1_Button4 is NULL");
   }
+
+  setupVsync();
     save_program_semaphore = xSemaphoreCreateBinary();
     
     wifi_connect_semaphore = xSemaphoreCreateBinary();
